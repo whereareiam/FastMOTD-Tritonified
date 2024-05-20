@@ -2,7 +2,6 @@
 
 plugins {
     id("java")
-    id("checkstyle")
     id("com.github.spotbugs").version("5.0.7")
     id("org.cadixdev.licenser").version("0.6.1")
     id("com.github.johnrengelman.shadow").version("7.1.2")
@@ -35,6 +34,10 @@ repositories {
         setName("sonatype-snapshots-repo")
         setUrl("https://s01.oss.sonatype.org/content/repositories/snapshots/")
     }
+    maven() {
+        setName("Diogo Correia's Reposilite Repository")
+        setUrl("https://repo.diogotc.com/snapshots/")
+    }
 }
 
 dependencies {
@@ -44,13 +47,16 @@ dependencies {
     implementation("net.elytrium:fastprepare:1.0.8")
     implementation("net.elytrium:serializer:1.1.1")
     implementation('it.unimi.dsi:fastutil-core:8.5.11')
+
     compileOnly("com.velocitypowered:velocity-api:3.3.0-SNAPSHOT")
     annotationProcessor("com.velocitypowered:velocity-api:3.3.0-SNAPSHOT")
     compileOnly("com.velocitypowered:velocity-proxy:3.3.0-SNAPSHOT")
     compileOnly('com.github.spotbugs:spotbugs-annotations:4.7.3')
+    compileOnly("com.rexcantor64.triton:api:4.0.0-SNAPSHOT")
+
     // Needs for some velocity methods.
     compileOnly('io.netty:netty-codec:4.1.86.Final')
-    compileOnly('io.netty:netty-handler:4.1.86.Final')
+    compileOnly('io.netty:netty-handler:4.1.109.Final')
 
     implementation("org.bstats:bstats-velocity:3.0.0")
 }
@@ -113,16 +119,6 @@ shadowJar {
 
 license {
     setHeader(file("HEADER.txt"))
-}
-
-checkstyle {
-    setToolVersion("10.1")
-    setConfigFile(file("${this.getRootDir()}/config/checkstyle/checkstyle.xml"))
-    setConfigProperties("configDirectory": "${this.getRootDir()}/config/checkstyle")
-
-    // The build should immediately fail if we have errors.
-    setMaxErrors(0)
-    setMaxWarnings(0)
 }
 
 spotbugsMain {

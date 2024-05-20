@@ -23,6 +23,7 @@ import com.velocitypowered.api.event.EventManager;
 import com.velocitypowered.api.event.Subscribe;
 import com.velocitypowered.api.event.proxy.ProxyInitializeEvent;
 import com.velocitypowered.api.network.ProtocolVersion;
+import com.velocitypowered.api.plugin.Dependency;
 import com.velocitypowered.api.plugin.Plugin;
 import com.velocitypowered.api.plugin.annotation.DataDirectory;
 import com.velocitypowered.api.proxy.ProxyServer;
@@ -43,6 +44,7 @@ import it.unimi.dsi.fastutil.ints.Int2ObjectMap;
 import it.unimi.dsi.fastutil.ints.Int2ObjectOpenHashMap;
 import it.unimi.dsi.fastutil.ints.IntOpenHashSet;
 import it.unimi.dsi.fastutil.ints.IntSet;
+
 import java.lang.reflect.Field;
 import java.net.InetAddress;
 import java.net.UnknownHostException;
@@ -57,6 +59,7 @@ import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
+
 import net.elytrium.commons.utils.reflection.ReflectionException;
 import net.elytrium.commons.utils.updates.UpdatesChecker;
 import net.elytrium.fastmotd.command.MaintenanceCommand;
@@ -74,329 +77,332 @@ import org.bstats.velocity.Metrics;
 import org.slf4j.Logger;
 
 @Plugin(
-    id = "fastmotd",
-    name = "FastMOTD",
-    version = BuildConstants.VERSION,
-    description = "MOTD plugin that uses FastPrepareAPI.",
-    url = "https://elytrium.net/",
-    authors = {
-        "Elytrium (https://elytrium.net/)",
-    }
+		id = "fastmotd",
+		name = "FastMOTD",
+		version = BuildConstants.VERSION,
+		description = "MOTD plugin that uses FastPrepareAPI.",
+		url = "https://elytrium.net/",
+		authors = {
+				"Elytrium (https://elytrium.net/)",
+		},
+		dependencies = {
+				@Dependency(id = "triton")
+		}
 )
 public class FastMOTD {
 
-  private static final Field connectionManager;
-  private static final Field initializer;
+	private static final Field connectionManager;
+	private static final Field initializer;
 
-  private final Logger logger;
-  private final VelocityServer server;
-  private final Metrics.Factory metricsFactory;
-  private final Path configPath;
-  private final List<MOTDGenerator> motdGenerators = new ArrayList<>();
-  private final List<MOTDGenerator> maintenanceMOTDGenerators = new ArrayList<>();
-  private final Int2IntMap protocolPointers = new Int2IntOpenHashMap();
-  private final Int2IntMap maintenanceProtocolPointers = new Int2IntOpenHashMap();
-  private final Map<String, MOTDGenerator> domainMOTD = new HashMap<>();
-  private final Map<String, MOTDGenerator> domainMaintenanceMOTD = new HashMap<>();
-  private PreparedPacketFactory preparedPacketFactory;
-  private ScheduledTask updater;
-  private PreparedPacket kickReason;
-  private Set<InetAddress> kickWhitelist;
+	private final Logger logger;
+	private final VelocityServer server;
+	private final Metrics.Factory metricsFactory;
+	private final Path configPath;
+	private final List<MOTDGenerator> motdGenerators = new ArrayList<>();
+	private final List<MOTDGenerator> maintenanceMOTDGenerators = new ArrayList<>();
+	private final Int2IntMap protocolPointers = new Int2IntOpenHashMap();
+	private final Int2IntMap maintenanceProtocolPointers = new Int2IntOpenHashMap();
+	private final Map<String, MOTDGenerator> domainMOTD = new HashMap<>();
+	private final Map<String, MOTDGenerator> domainMaintenanceMOTD = new HashMap<>();
+	private PreparedPacketFactory preparedPacketFactory;
+	private ScheduledTask updater;
+	private PreparedPacket kickReason;
+	private Set<InetAddress> kickWhitelist;
 
-  static {
-    try {
-      connectionManager = VelocityServer.class.getDeclaredField("cm");
-      connectionManager.setAccessible(true);
+	static {
+		try {
+			connectionManager = VelocityServer.class.getDeclaredField("cm");
+			connectionManager.setAccessible(true);
 
-      initializer = ServerChannelInitializerHolder.class.getDeclaredField("initializer");
-      initializer.setAccessible(true);
-    } catch (NoSuchFieldException e) {
-      throw new ReflectionException(e);
-    }
-  }
+			initializer = ServerChannelInitializerHolder.class.getDeclaredField("initializer");
+			initializer.setAccessible(true);
+		} catch (NoSuchFieldException e) {
+			throw new ReflectionException(e);
+		}
+	}
 
-  @Inject
-  public FastMOTD(Logger logger, ProxyServer server, Metrics.Factory metricsFactory, @DataDirectory Path dataDirectory) {
-    this.logger = logger;
-    this.server = (VelocityServer) server;
-    this.metricsFactory = metricsFactory;
-    this.configPath = dataDirectory.resolve("config.yml");
-  }
+	@Inject
+	public FastMOTD(Logger logger, ProxyServer server, Metrics.Factory metricsFactory, @DataDirectory Path dataDirectory) {
+		this.logger = logger;
+		this.server = (VelocityServer) server;
+		this.metricsFactory = metricsFactory;
+		this.configPath = dataDirectory.resolve("config.yml");
+	}
 
-  @Subscribe
-  public void onProxyInitialization(ProxyInitializeEvent event) {
-    try {
-      ConnectionManager cm = (ConnectionManager) connectionManager.get(this.server);
-      ChannelInitializer<?> oldInitializer = (ChannelInitializer<?>) initializer.get(cm.serverChannelInitializer);
-      initializer.set(cm.serverChannelInitializer, new ServerChannelInitializerHook(this, oldInitializer));
-      this.logger.info("Hooked into ServerChannelInitializer");
-    } catch (IllegalAccessException e) {
-      this.logger.info("Error while hooking into ServerChannelInitializer");
-      throw new ReflectionException(e);
-    }
+	@Subscribe
+	public void onProxyInitialization(ProxyInitializeEvent event) {
+		try {
+			ConnectionManager cm = (ConnectionManager) connectionManager.get(this.server);
+			ChannelInitializer<?> oldInitializer = (ChannelInitializer<?>) initializer.get(cm.serverChannelInitializer);
+			initializer.set(cm.serverChannelInitializer, new ServerChannelInitializerHook(this, oldInitializer));
+			this.logger.info("Hooked into ServerChannelInitializer");
+		} catch (IllegalAccessException e) {
+			this.logger.info("Error while hooking into ServerChannelInitializer");
+			throw new ReflectionException(e);
+		}
 
-    this.preparedPacketFactory =
-        new PreparedPacketFactory(PreparedPacket::new, StateRegistry.LOGIN, false, 1, 1, false, true);
+		this.preparedPacketFactory =
+				new PreparedPacketFactory(PreparedPacket::new, StateRegistry.LOGIN, false, 1, 1, false, true);
 
-    this.reload();
-  }
+		this.reload();
+	}
 
-  public void reload() {
-    Settings.IMP.reload(this.configPath);
+	public void reload() {
+		Settings.IMP.reload(this.configPath);
 
-    if (!UpdatesChecker.checkVersionByURL("https://raw.githubusercontent.com/Elytrium/FastMOTD/master/VERSION", Settings.IMP.VERSION)) {
-      this.logger.error("****************************************");
-      this.logger.warn("The new FastMOTD update was found, please update.");
-      this.logger.error("https://github.com/Elytrium/FastMOTD/releases/");
-      this.logger.error("****************************************");
-    }
-    this.metricsFactory.make(this, 15640);
+		if (!UpdatesChecker.checkVersionByURL("https://raw.githubusercontent.com/Elytrium/FastMOTD/master/VERSION", Settings.IMP.VERSION)) {
+			this.logger.error("****************************************");
+			this.logger.warn("The new FastMOTD update was found, please update.");
+			this.logger.error("https://github.com/Elytrium/FastMOTD/releases/");
+			this.logger.error("****************************************");
+		}
+		this.metricsFactory.make(this, 15640);
 
-    ComponentSerializer<Component, Component, String> serializer = Settings.IMP.SERIALIZER.getSerializer();
-    if (serializer == null) {
-      this.logger.error("Incorrect serializer set: {}", Settings.IMP.SERIALIZER);
-      return;
-    }
+		ComponentSerializer<Component, Component, String> serializer = Settings.IMP.SERIALIZER.getSerializer();
+		if (serializer == null) {
+			this.logger.error("Incorrect serializer set: {}", Settings.IMP.SERIALIZER);
+			return;
+		}
 
-    this.motdGenerators.forEach(MOTDGenerator::dispose);
-    this.maintenanceMOTDGenerators.forEach(MOTDGenerator::dispose);
-    this.domainMOTD.values().forEach(MOTDGenerator::dispose);
-    this.domainMaintenanceMOTD.values().forEach(MOTDGenerator::dispose);
+		this.motdGenerators.forEach(MOTDGenerator::dispose);
+		this.maintenanceMOTDGenerators.forEach(MOTDGenerator::dispose);
+		this.domainMOTD.values().forEach(MOTDGenerator::dispose);
+		this.domainMaintenanceMOTD.values().forEach(MOTDGenerator::dispose);
 
-    this.protocolPointers.clear();
-    this.motdGenerators.clear();
-    this.domainMOTD.clear();
+		this.protocolPointers.clear();
+		this.motdGenerators.clear();
+		this.domainMOTD.clear();
 
-    this.maintenanceProtocolPointers.clear();
-    this.maintenanceMOTDGenerators.clear();
-    this.domainMaintenanceMOTD.clear();
+		this.maintenanceProtocolPointers.clear();
+		this.maintenanceMOTDGenerators.clear();
+		this.domainMaintenanceMOTD.clear();
 
-    CommandManager commandManager = this.server.getCommandManager();
-    commandManager.unregister("fastmotdreload");
-    commandManager.unregister("maintenance");
+		CommandManager commandManager = this.server.getCommandManager();
+		commandManager.unregister("fastmotdreload");
+		commandManager.unregister("maintenance");
 
-    commandManager.register("fastmotdreload", new ReloadCommand(this));
-    commandManager.register("maintenance",
-        new MaintenanceCommand(this, serializer.deserialize(Settings.IMP.MAINTENANCE.COMMAND.USAGE)));
+		commandManager.register("fastmotdreload", new ReloadCommand(this));
+		commandManager.register("maintenance",
+				new MaintenanceCommand(this, serializer.deserialize(Settings.IMP.MAINTENANCE.COMMAND.USAGE)));
 
-    EventManager eventManager = this.server.getEventManager();
-    eventManager.unregisterListeners(this);
-    eventManager.register(this, new CompatPingListener(this));
+		EventManager eventManager = this.server.getEventManager();
+		eventManager.unregisterListeners(this);
+		eventManager.register(this, new CompatPingListener(this));
 
-    if (Settings.IMP.SHUTDOWN_SCHEDULER.SHUTDOWN_SCHEDULER_ENABLED && Settings.IMP.SHUTDOWN_SCHEDULER.SHUTDOWN_ON_ZERO_PLAYERS) {
-      eventManager.register(this, new DisconnectOnZeroPlayersListener(this));
-    }
+		if (Settings.IMP.SHUTDOWN_SCHEDULER.SHUTDOWN_SCHEDULER_ENABLED && Settings.IMP.SHUTDOWN_SCHEDULER.SHUTDOWN_ON_ZERO_PLAYERS) {
+			eventManager.register(this, new DisconnectOnZeroPlayersListener(this));
+		}
 
-    if (this.updater != null) {
-      this.updater.cancel();
-    }
+		if (this.updater != null) {
+			this.updater.cancel();
+		}
 
-    if (this.kickReason != null) {
-      this.kickReason.release();
-    }
+		if (this.kickReason != null) {
+			this.kickReason.release();
+		}
 
-    Component kickReasonComponent = serializer.deserialize(Settings.IMP.MAINTENANCE.KICK_MESSAGE);
-    this.kickReason = this.preparedPacketFactory
-        .createPreparedPacket(ProtocolVersion.MINIMUM_VERSION, ProtocolVersion.MAXIMUM_VERSION)
-        .prepare(version -> DisconnectPacket.create(kickReasonComponent, version, StateRegistry.LOGIN))
-        .build();
+		Component kickReasonComponent = serializer.deserialize(Settings.IMP.MAINTENANCE.KICK_MESSAGE);
+		this.kickReason = this.preparedPacketFactory
+				.createPreparedPacket(ProtocolVersion.MINIMUM_VERSION, ProtocolVersion.MAXIMUM_VERSION)
+				.prepare(version -> DisconnectPacket.create(kickReasonComponent, version, StateRegistry.LOGIN))
+				.build();
 
-    this.kickWhitelist = Settings.IMP.MAINTENANCE.KICK_WHITELIST.stream().map((String host) -> {
-      try {
-        return InetAddress.getByName(host);
-      } catch (UnknownHostException e) {
-        throw new IllegalArgumentException(e);
-      }
-    }).collect(Collectors.toSet());
+		this.kickWhitelist = Settings.IMP.MAINTENANCE.KICK_WHITELIST.stream().map((String host) -> {
+			try {
+				return InetAddress.getByName(host);
+			} catch (UnknownHostException e) {
+				throw new IllegalArgumentException(e);
+			}
+		}).collect(Collectors.toSet());
 
-    this.generateMOTDGenerators(serializer, Settings.IMP.MAIN.VERSION_NAME, Settings.IMP.MAIN.DESCRIPTIONS,
-            Settings.IMP.MAIN.FAVICONS, Settings.IMP.MAIN.INFORMATION, this.motdGenerators, this.protocolPointers,
-            Settings.IMP.MAIN.VERSIONS.DESCRIPTIONS, Settings.IMP.MAIN.VERSIONS.FAVICONS, Settings.IMP.MAIN.VERSIONS.INFORMATION,
-            Settings.IMP.MAIN.DOMAINS, this.domainMOTD);
+		this.generateMOTDGenerators(serializer, Settings.IMP.MAIN.VERSION_NAME, Settings.IMP.MAIN.DESCRIPTIONS,
+				Settings.IMP.MAIN.FAVICONS, Settings.IMP.MAIN.INFORMATION, this.motdGenerators, this.protocolPointers,
+				Settings.IMP.MAIN.VERSIONS.DESCRIPTIONS, Settings.IMP.MAIN.VERSIONS.FAVICONS, Settings.IMP.MAIN.VERSIONS.INFORMATION,
+				Settings.IMP.MAIN.DOMAINS, this.domainMOTD);
 
-    this.generateMOTDGenerators(serializer, Settings.IMP.MAINTENANCE.VERSION_NAME, Settings.IMP.MAINTENANCE.DESCRIPTIONS,
-            Settings.IMP.MAINTENANCE.FAVICONS, Settings.IMP.MAINTENANCE.INFORMATION, this.maintenanceMOTDGenerators,
-            this.maintenanceProtocolPointers, Settings.IMP.MAINTENANCE.VERSIONS.DESCRIPTIONS,
-            Settings.IMP.MAINTENANCE.VERSIONS.FAVICONS, Settings.IMP.MAINTENANCE.VERSIONS.INFORMATION,
-            Settings.IMP.MAINTENANCE.DOMAINS, this.domainMaintenanceMOTD);
+		this.generateMOTDGenerators(serializer, Settings.IMP.MAINTENANCE.VERSION_NAME, Settings.IMP.MAINTENANCE.DESCRIPTIONS,
+				Settings.IMP.MAINTENANCE.FAVICONS, Settings.IMP.MAINTENANCE.INFORMATION, this.maintenanceMOTDGenerators,
+				this.maintenanceProtocolPointers, Settings.IMP.MAINTENANCE.VERSIONS.DESCRIPTIONS,
+				Settings.IMP.MAINTENANCE.VERSIONS.FAVICONS, Settings.IMP.MAINTENANCE.VERSIONS.INFORMATION,
+				Settings.IMP.MAINTENANCE.DOMAINS, this.domainMaintenanceMOTD);
 
-    this.updater = this.server.getScheduler()
-        .buildTask(this, this::updateMOTD)
-        .repeat(Settings.IMP.MAIN.UPDATE_RATE, TimeUnit.MILLISECONDS)
-        .schedule();
-  }
+		this.updater = this.server.getScheduler()
+				.buildTask(this, this::updateMOTD)
+				.repeat(Settings.IMP.MAIN.UPDATE_RATE, TimeUnit.MILLISECONDS)
+				.schedule();
+	}
 
-  private void generateMOTDGenerators(
-          ComponentSerializer<Component, Component, String> serializer,
-          String versionName, List<String> defaultDescriptions, List<String> defaultFavicons,
-          List<String> defaultInformation, List<MOTDGenerator> dest, Int2IntMap destPointers,
-          Map<String, List<String>> descriptionVersions, Map<String, List<String>> faviconVersions,
-          Map<String, List<String>> informationVersions, Map<String, Settings.DOMAIN_MOTD_NODE> domainMotd,
-          Map<String, MOTDGenerator> domainDest) {
-    descriptionVersions = Objects.requireNonNullElseGet(descriptionVersions, HashMap::new);
-    faviconVersions = Objects.requireNonNullElseGet(faviconVersions, HashMap::new);
-    informationVersions = Objects.requireNonNullElseGet(informationVersions, HashMap::new);
-    List<String> nonNullDefaultDescriptions = Objects.requireNonNullElseGet(defaultDescriptions, Collections::emptyList);
-    List<String> nonNullDefaultFavicons = Objects.requireNonNullElseGet(defaultFavicons, Collections::emptyList);
-    List<String> nonNullDefaultInformation = Objects.requireNonNullElseGet(defaultInformation, Collections::emptyList);
+	private void generateMOTDGenerators(
+			ComponentSerializer<Component, Component, String> serializer,
+			String versionName, List<String> defaultDescriptions, List<String> defaultFavicons,
+			List<String> defaultInformation, List<MOTDGenerator> dest, Int2IntMap destPointers,
+			Map<String, List<String>> descriptionVersions, Map<String, List<String>> faviconVersions,
+			Map<String, List<String>> informationVersions, Map<String, Settings.DOMAIN_MOTD_NODE> domainMotd,
+			Map<String, MOTDGenerator> domainDest) {
+		descriptionVersions = Objects.requireNonNullElseGet(descriptionVersions, HashMap::new);
+		faviconVersions = Objects.requireNonNullElseGet(faviconVersions, HashMap::new);
+		informationVersions = Objects.requireNonNullElseGet(informationVersions, HashMap::new);
+		List<String> nonNullDefaultDescriptions = Objects.requireNonNullElseGet(defaultDescriptions, Collections::emptyList);
+		List<String> nonNullDefaultFavicons = Objects.requireNonNullElseGet(defaultFavicons, Collections::emptyList);
+		List<String> nonNullDefaultInformation = Objects.requireNonNullElseGet(defaultInformation, Collections::emptyList);
 
-    MOTDGenerator defaultMotdGenerator =
-        new MOTDGenerator(this, serializer, versionName, nonNullDefaultDescriptions, nonNullDefaultFavicons, nonNullDefaultInformation);
-    defaultMotdGenerator.generate();
-    dest.add(defaultMotdGenerator);
+		MOTDGenerator defaultMotdGenerator =
+				new MOTDGenerator(this, serializer, versionName, nonNullDefaultDescriptions, nonNullDefaultFavicons, nonNullDefaultInformation);
+		defaultMotdGenerator.generate();
+		dest.add(defaultMotdGenerator);
 
-    Int2ObjectMap<List<String>> protocolDescriptions = new Int2ObjectOpenHashMap<>();
-    Int2ObjectMap<List<String>> protocolIcons = new Int2ObjectOpenHashMap<>();
-    Int2ObjectMap<List<String>> protocolInformation = new Int2ObjectOpenHashMap<>();
+		Int2ObjectMap<List<String>> protocolDescriptions = new Int2ObjectOpenHashMap<>();
+		Int2ObjectMap<List<String>> protocolIcons = new Int2ObjectOpenHashMap<>();
+		Int2ObjectMap<List<String>> protocolInformation = new Int2ObjectOpenHashMap<>();
 
-    this.sortByProtocolVersion(descriptionVersions, protocolDescriptions);
-    this.sortByProtocolVersion(faviconVersions, protocolIcons);
-    this.sortByProtocolVersion(informationVersions, protocolInformation);
+		this.sortByProtocolVersion(descriptionVersions, protocolDescriptions);
+		this.sortByProtocolVersion(faviconVersions, protocolIcons);
+		this.sortByProtocolVersion(informationVersions, protocolInformation);
 
-    IntSet allProtocols = new IntOpenHashSet();
-    allProtocols.addAll(protocolDescriptions.keySet());
-    allProtocols.addAll(protocolIcons.keySet());
-    allProtocols.addAll(protocolInformation.keySet());
+		IntSet allProtocols = new IntOpenHashSet();
+		allProtocols.addAll(protocolDescriptions.keySet());
+		allProtocols.addAll(protocolIcons.keySet());
+		allProtocols.addAll(protocolInformation.keySet());
 
-    Map<List<String>, IntSet> protocolsByData = new HashMap<>();
+		Map<List<String>, IntSet> protocolsByData = new HashMap<>();
 
-    allProtocols.forEach(protocol -> {
-      List<String> key = new ArrayList<>();
-      key.addAll(protocolDescriptions.getOrDefault(protocol, nonNullDefaultDescriptions));
-      key.addAll(protocolIcons.getOrDefault(protocol, nonNullDefaultFavicons));
-      key.addAll(protocolInformation.getOrDefault(protocol, nonNullDefaultInformation));
-      protocolsByData.computeIfAbsent(key, k -> new IntOpenHashSet()).add(protocol);
-    });
+		allProtocols.forEach(protocol -> {
+			List<String> key = new ArrayList<>();
+			key.addAll(protocolDescriptions.getOrDefault(protocol, nonNullDefaultDescriptions));
+			key.addAll(protocolIcons.getOrDefault(protocol, nonNullDefaultFavicons));
+			key.addAll(protocolInformation.getOrDefault(protocol, nonNullDefaultInformation));
+			protocolsByData.computeIfAbsent(key, k -> new IntOpenHashSet()).add(protocol);
+		});
 
-    protocolsByData.values().forEach(identical -> {
-      final int idx = dest.size();
-      final int key = identical.iterator().nextInt();
-      MOTDGenerator motdGenerator = new MOTDGenerator(this, serializer, versionName,
-              protocolDescriptions.getOrDefault(key, nonNullDefaultDescriptions),
-              protocolIcons.getOrDefault(key, nonNullDefaultFavicons),
-              protocolInformation.getOrDefault(key, nonNullDefaultInformation));
-      motdGenerator.generate();
-      dest.add(motdGenerator);
-      identical.forEach(p -> destPointers.put(p, idx));
-    });
+		protocolsByData.values().forEach(identical -> {
+			final int idx = dest.size();
+			final int key = identical.iterator().nextInt();
+			MOTDGenerator motdGenerator = new MOTDGenerator(this, serializer, versionName,
+					protocolDescriptions.getOrDefault(key, nonNullDefaultDescriptions),
+					protocolIcons.getOrDefault(key, nonNullDefaultFavicons),
+					protocolInformation.getOrDefault(key, nonNullDefaultInformation));
+			motdGenerator.generate();
+			dest.add(motdGenerator);
+			identical.forEach(p -> destPointers.put(p, idx));
+		});
 
-    domainMotd.forEach((domain, motdNode) -> {
-      MOTDGenerator motdGenerator = new MOTDGenerator(this, serializer, versionName,
-              motdNode.DESCRIPTION, motdNode.FAVICON, motdNode.INFORMATION);
-      motdGenerator.generate();
-      domainDest.put(domain, motdGenerator);
-    });
-  }
+		domainMotd.forEach((domain, motdNode) -> {
+			MOTDGenerator motdGenerator = new MOTDGenerator(this, serializer, versionName,
+					motdNode.DESCRIPTION, motdNode.FAVICON, motdNode.INFORMATION);
+			motdGenerator.generate();
+			domainDest.put(domain, motdGenerator);
+		});
+	}
 
-  private void sortByProtocolVersion(Map<String, List<String>> src, Int2ObjectMap<List<String>> dest) {
-    src.forEach((key, value) -> {
-      IntStream range;
-      if (key.contains("-")) {
-        String[] parts = key.split("-");
-        range = IntStream.rangeClosed(Integer.parseInt(parts[0]), Integer.parseInt(parts[1]));
-      } else {
-        range = IntStream.of(Integer.parseInt(key));
-      }
-      range.forEach(protocol -> dest.computeIfAbsent(protocol, p -> new ArrayList<>()).addAll(value));
-    });
-  }
+	private void sortByProtocolVersion(Map<String, List<String>> src, Int2ObjectMap<List<String>> dest) {
+		src.forEach((key, value) -> {
+			IntStream range;
+			if (key.contains("-")) {
+				String[] parts = key.split("-");
+				range = IntStream.rangeClosed(Integer.parseInt(parts[0]), Integer.parseInt(parts[1]));
+			} else {
+				range = IntStream.of(Integer.parseInt(key));
+			}
+			range.forEach(protocol -> dest.computeIfAbsent(protocol, p -> new ArrayList<>()).addAll(value));
+		});
+	}
 
-  private void updateMOTD() {
-    int online = this.getOnline();
-    int max = this.getMax(online);
+	private void updateMOTD() {
+		int online = this.getOnline();
+		int max = this.getMax(online);
 
-    for (MOTDGenerator generator : this.motdGenerators) {
-      generator.update(max, online);
-    }
+		for (MOTDGenerator generator : this.motdGenerators) {
+			generator.update(max, online);
+		}
 
-    for (MOTDGenerator generator : this.domainMOTD.values()) {
-      generator.update(max, online);
-    }
+		for (MOTDGenerator generator : this.domainMOTD.values()) {
+			generator.update(max, online);
+		}
 
-    if (Settings.IMP.MAINTENANCE.OVERRIDE_MAX_ONLINE != -1) {
-      max = Settings.IMP.MAINTENANCE.OVERRIDE_MAX_ONLINE;
-    }
+		if (Settings.IMP.MAINTENANCE.OVERRIDE_MAX_ONLINE != -1) {
+			max = Settings.IMP.MAINTENANCE.OVERRIDE_MAX_ONLINE;
+		}
 
-    if (Settings.IMP.MAINTENANCE.OVERRIDE_ONLINE != -1) {
-      online = Settings.IMP.MAINTENANCE.OVERRIDE_ONLINE;
-    }
+		if (Settings.IMP.MAINTENANCE.OVERRIDE_ONLINE != -1) {
+			online = Settings.IMP.MAINTENANCE.OVERRIDE_ONLINE;
+		}
 
-    for (MOTDGenerator generator : this.maintenanceMOTDGenerators) {
-      generator.update(max, online);
-    }
+		for (MOTDGenerator generator : this.maintenanceMOTDGenerators) {
+			generator.update(max, online);
+		}
 
-    for (MOTDGenerator generator : this.domainMaintenanceMOTD.values()) {
-      generator.update(max, online);
-    }
-  }
+		for (MOTDGenerator generator : this.domainMaintenanceMOTD.values()) {
+			generator.update(max, online);
+		}
+	}
 
-  private int getOnline() {
-    int online = this.server.getPlayerCount() + Settings.IMP.MAIN.FAKE_ONLINE_ADD_SINGLE;
-    return online * (Settings.IMP.MAIN.FAKE_ONLINE_ADD_PERCENT + 100) / 100;
-  }
+	private int getOnline() {
+		int online = this.server.getPlayerCount() + Settings.IMP.MAIN.FAKE_ONLINE_ADD_SINGLE;
+		return online * (Settings.IMP.MAIN.FAKE_ONLINE_ADD_PERCENT + 100) / 100;
+	}
 
-  private int getMax(int online) {
-    int max;
-    MaxCountType type = Settings.IMP.MAIN.MAX_COUNT_TYPE;
-    max = switch (type) {
-      case ADD_SOME -> online + Settings.IMP.MAIN.MAX_COUNT;
-      case VARIABLE -> Settings.IMP.MAIN.MAX_COUNT;
-    };
+	private int getMax(int online) {
+		int max;
+		MaxCountType type = Settings.IMP.MAIN.MAX_COUNT_TYPE;
+		max = switch (type) {
+			case ADD_SOME -> online + Settings.IMP.MAIN.MAX_COUNT;
+			case VARIABLE -> Settings.IMP.MAIN.MAX_COUNT;
+		};
 
-    return max;
-  }
+		return max;
+	}
 
-  public ByteBuf getNext(ProtocolVersion version, String serverAddress) {
-    if (Settings.IMP.MAINTENANCE.MAINTENANCE_ENABLED) {
-      return this.domainMaintenanceMOTD.getOrDefault(serverAddress, this.maintenanceMOTDGenerators.get(
-              this.maintenanceProtocolPointers.getOrDefault(version.getProtocol(), 0)))
-              .getNext(version, !Settings.IMP.MAINTENANCE.SHOW_VERSION);
-    } else {
-      return this.domainMOTD.getOrDefault(serverAddress, this.motdGenerators.get(
-              this.protocolPointers.getOrDefault(version.getProtocol(), 0)))
-              .getNext(version, true);
-    }
-  }
+	public ByteBuf getNext(ProtocolVersion version, String serverAddress) {
+		if (Settings.IMP.MAINTENANCE.MAINTENANCE_ENABLED) {
+			return this.domainMaintenanceMOTD.getOrDefault(serverAddress, this.maintenanceMOTDGenerators.get(
+							this.maintenanceProtocolPointers.getOrDefault(version.getProtocol(), 0)))
+					.getNext(version, !Settings.IMP.MAINTENANCE.SHOW_VERSION);
+		} else {
+			return this.domainMOTD.getOrDefault(serverAddress, this.motdGenerators.get(
+							this.protocolPointers.getOrDefault(version.getProtocol(), 0)))
+					.getNext(version, true);
+		}
+	}
 
-  public ServerPing getNextCompat(ProtocolVersion version, String serverAddress) {
-    if (Settings.IMP.MAINTENANCE.MAINTENANCE_ENABLED) {
-      return this.domainMaintenanceMOTD.getOrDefault(serverAddress, this.maintenanceMOTDGenerators.get(
-              this.maintenanceProtocolPointers.getOrDefault(version.getProtocol(), 0)))
-              .getNextCompat(version, !Settings.IMP.MAINTENANCE.SHOW_VERSION);
-    } else {
-      return this.domainMOTD.getOrDefault(serverAddress, this.motdGenerators.get(
-              this.protocolPointers.getOrDefault(version.getProtocol(), 0)))
-              .getNextCompat(version, true);
-    }
-  }
+	public ServerPing getNextCompat(ProtocolVersion version, String serverAddress) {
+		if (Settings.IMP.MAINTENANCE.MAINTENANCE_ENABLED) {
+			return this.domainMaintenanceMOTD.getOrDefault(serverAddress, this.maintenanceMOTDGenerators.get(
+							this.maintenanceProtocolPointers.getOrDefault(version.getProtocol(), 0)))
+					.getNextCompat(version, !Settings.IMP.MAINTENANCE.SHOW_VERSION);
+		} else {
+			return this.domainMOTD.getOrDefault(serverAddress, this.motdGenerators.get(
+							this.protocolPointers.getOrDefault(version.getProtocol(), 0)))
+					.getNextCompat(version, true);
+		}
+	}
 
-  public void inject(MinecraftConnection connection, ChannelPipeline pipeline) {
-    this.preparedPacketFactory.inject(DummyPlayer.INSTANCE, connection, pipeline);
-  }
+	public void inject(MinecraftConnection connection, ChannelPipeline pipeline) {
+		this.preparedPacketFactory.inject(DummyPlayer.INSTANCE, connection, pipeline);
+	}
 
-  public boolean checkKickWhitelist(InetAddress inetAddress) {
-    return this.kickWhitelist.contains(inetAddress);
-  }
+	public boolean checkKickWhitelist(InetAddress inetAddress) {
+		return this.kickWhitelist.contains(inetAddress);
+	}
 
-  public VelocityServer getServer() {
-    return this.server;
-  }
+	public VelocityServer getServer() {
+		return this.server;
+	}
 
-  public Logger getLogger() {
-    return this.logger;
-  }
+	public Logger getLogger() {
+		return this.logger;
+	}
 
-  public PreparedPacket getKickReason() {
-    return this.kickReason;
-  }
+	public PreparedPacket getKickReason() {
+		return this.kickReason;
+	}
 
-  public Path getConfigPath() {
-    return this.configPath;
-  }
+	public Path getConfigPath() {
+		return this.configPath;
+	}
 
-  public enum MaxCountType {
+	public enum MaxCountType {
 
-    VARIABLE,
-    ADD_SOME
-  }
+		VARIABLE,
+		ADD_SOME
+	}
 }
